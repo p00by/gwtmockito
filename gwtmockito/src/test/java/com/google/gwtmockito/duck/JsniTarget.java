@@ -9,4 +9,8 @@ public class JsniTarget {
   public void setBlah(String blah) {
     throw new LinkageError();
   };
+  
+  public static String staticBlah() {
+    throw new LinkageError();
+  }
 }

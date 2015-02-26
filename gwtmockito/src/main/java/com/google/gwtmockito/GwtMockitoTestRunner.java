@@ -496,7 +496,14 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
       for (CtMethod duckMethod : ctDuck.getDeclaredMethods()) {
         CtMethod classMethod = ctClass.getDeclaredMethod(duckMethod.getName(), duckMethod.getParameterTypes());
         if (classMethod != null) {
-          String methodCall = "duck." + duckMethod.getName() + getParameterArray(duckMethod.getParameterTypes().length) + ";";
+          String methodObject;
+          if ((classMethod.getModifiers() & javassist.Modifier.STATIC) == 0) {
+            methodObject = "duck";
+          } else {
+            methodObject = duck;
+          }
+          
+          String methodCall = methodObject + "." + duckMethod.getName() + getParameterArray(duckMethod.getParameterTypes().length) + ";";
           if (classMethod.getReturnType().equals(CtClass.voidType)) {
             classMethod.setBody(methodCall);
           } else {

@@ -11,4 +11,8 @@ public class JsniTargetDuck {
   public void setBlah(String blah) {
     this.blah = blah;
   }
+  
+  public static String staticBlah() {
+    return "staticBlah";
+  }
 }

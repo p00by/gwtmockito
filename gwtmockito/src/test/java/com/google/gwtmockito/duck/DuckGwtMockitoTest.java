@@ -9,10 +9,15 @@ import org.junit.runner.RunWith;
 public class DuckGwtMockitoTest {
 
   @Test
-  public void testJsni() {
+  public void testSetterAndGetter() {
     JsniTarget jsniTarget = new JsniTarget();
     jsniTarget.setBlah("Foo blah");
     assertEquals("Foo blah", jsniTarget.getBlah());
+  }
+  
+  @Test
+  public void testStaticMethod() {
+    assertEquals("staticBlah", JsniTarget.staticBlah());
   }
   
 }
