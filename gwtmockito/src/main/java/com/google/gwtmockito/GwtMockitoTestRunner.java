@@ -15,14 +15,36 @@
  */
 package com.google.gwtmockito;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+
 import javassist.CannotCompileException;
 import javassist.ClassPool;
 import javassist.CtClass;
 import javassist.CtConstructor;
+import javassist.CtField;
 import javassist.CtMethod;
 import javassist.Loader;
 import javassist.NotFoundException;
 import javassist.Translator;
+
+import org.junit.runner.Description;
+import org.junit.runner.Result;
+import org.junit.runner.notification.Failure;
+import org.junit.runner.notification.RunListener;
+import org.junit.runner.notification.RunNotifier;
+import org.junit.runners.BlockJUnit4ClassRunner;
+import org.junit.runners.ParentRunner;
+import org.junit.runners.model.FrameworkMethod;
+import org.junit.runners.model.InitializationError;
+import org.junit.runners.model.Statement;
+import org.junit.runners.model.TestClass;
 
 import com.google.gwt.user.cellview.client.CellList;
 import com.google.gwt.user.cellview.client.CellTable;
@@ -55,25 +77,6 @@ import com.google.gwt.user.client.ui.UIObject;
 import com.google.gwt.user.client.ui.VerticalPanel;
 import com.google.gwt.user.client.ui.Widget;
 import com.google.gwtmockito.impl.StubGenerator;
-
-import org.junit.runner.Description;
-import org.junit.runner.Result;
-import org.junit.runner.notification.Failure;
-import org.junit.runner.notification.RunListener;
-import org.junit.runner.notification.RunNotifier;
-import org.junit.runners.BlockJUnit4ClassRunner;
-import org.junit.runners.ParentRunner;
-import org.junit.runners.model.FrameworkMethod;
-import org.junit.runners.model.InitializationError;
-import org.junit.runners.model.Statement;
-import org.junit.runners.model.TestClass;
-
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.LinkedList;
-import java.util.List;
 
 /**
  * A JUnit4 test runner that executes a test using GwtMockito. In addition to
@@ -266,6 +269,10 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
 
     return packages;
   }
+  
+  protected Map<String, String> getClassesToDuckLoad() {
+    return new HashMap<String, String>();
+  }
 
   /**
    * Returns the classloader to use as the parent of GwtMockito's classloader. By default this is
@@ -422,46 +429,93 @@ public class GwtMockitoTestRunner extends BlockJUnit4ClassRunner {
     @Override
     public void onLoad(ClassPool pool, String name)
         throws NotFoundException, CannotCompileException {
-      CtClass clazz = pool.get(name);
+    	
+      Map<String, String> duckLoads = getClassesToDuckLoad();
+      if (duckLoads.containsKey(name)) {
+    	  duckLoad(pool, name, duckLoads.get(name));
+      } else {
+        CtClass clazz = pool.get(name);
+  
+        // Strip final modifiers from the class and all methods to allow them to be mocked
+        clazz.setModifiers(clazz.getModifiers() & ~Modifier.FINAL);
+        for (CtMethod method : clazz.getDeclaredMethods()) {
+          method.setModifiers(method.getModifiers() & ~Modifier.FINAL);
+        }
+  
+        // Create stub implementations for certain methods
+        for (CtMethod method : clazz.getDeclaredMethods()) {
+          if (StubGenerator.shouldStub(method, getClassesToStub())) {
+            method.setModifiers(method.getModifiers() & ~Modifier.NATIVE);
+            CtClass returnType = method.getReturnType();
+            // TODO(ekuefler): Handle primitives, voids, and enums in StubGenerator
+            if (returnType.isPrimitive() || returnType.getName().equals("void")) {
+              method.setBody(null);
+            } else if (returnType.isEnum()) {
+              method.setBody(String.format("return %s.values()[0];", returnType.getName()));
+            } else {
+              method.setBody(String.format(
+                  "return (%s) com.google.gwtmockito.impl.StubGenerator.invoke("
+                      + "Class.forName(\"%s\"), \"%s\", \"%s\");",
+                  method.getReturnType().getName(),
+                  method.getReturnType().getName(),
+                  clazz.getName(),
+                  method.getName()));
+            }
+          }
+        }
+  
+        // Also stub certain constructors
+        for (Class<?> classToStub : getClassesToStub()) {
+          if (classToStub.getName().equals(clazz.getName())) {
+            for (CtConstructor constructor : clazz.getConstructors()) {
+              String parameters = makeNullParameters(
+                  clazz.getSuperclass().getConstructors()[0].getParameterTypes());
+              constructor.setBody("super(" + parameters + ");");
+            }
+          }
+        }
+      }
+    }
 
-      // Strip final modifiers from the class and all methods to allow them to be mocked
-      clazz.setModifiers(clazz.getModifiers() & ~Modifier.FINAL);
-      for (CtMethod method : clazz.getDeclaredMethods()) {
-        method.setModifiers(method.getModifiers() & ~Modifier.FINAL);
+    private void duckLoad(ClassPool classPool, String klass, String duck) throws NotFoundException, CannotCompileException {
+      CtClass ctClass = classPool.get(klass);
+      CtClass ctDuck = classPool.get(duck);
+
+      CtField ctField = new CtField(ctDuck, "duck", ctClass);
+      ctClass.addField(ctField);
+
+      for (CtConstructor duckConstructor : ctDuck.getDeclaredConstructors()) {
+        for (CtConstructor classConstructor : ctClass.getConstructors()) {
+          if (Arrays.equals(duckConstructor.getParameterTypes(), classConstructor.getParameterTypes())) {
+            String constructorBody = "duck = new " + duck + getParameterArray(duckConstructor.getParameterTypes().length) + ";";
+            classConstructor.setBody(constructorBody);
+          }
+        }
       }
 
-      // Create stub implementations for certain methods
-      for (CtMethod method : clazz.getDeclaredMethods()) {
-        if (StubGenerator.shouldStub(method, getClassesToStub())) {
-          method.setModifiers(method.getModifiers() & ~Modifier.NATIVE);
-          CtClass returnType = method.getReturnType();
-          // TODO(ekuefler): Handle primitives, voids, and enums in StubGenerator
-          if (returnType.isPrimitive() || returnType.getName().equals("void")) {
-            method.setBody(null);
-          } else if (returnType.isEnum()) {
-            method.setBody(String.format("return %s.values()[0];", returnType.getName()));
+      for (CtMethod duckMethod : ctDuck.getDeclaredMethods()) {
+        CtMethod classMethod = ctClass.getDeclaredMethod(duckMethod.getName(), duckMethod.getParameterTypes());
+        if (classMethod != null) {
+          String methodCall = "duck." + duckMethod.getName() + getParameterArray(duckMethod.getParameterTypes().length) + ";";
+          if (classMethod.getReturnType().equals(CtClass.voidType)) {
+            classMethod.setBody(methodCall);
           } else {
-            method.setBody(String.format(
-                "return (%s) com.google.gwtmockito.impl.StubGenerator.invoke("
-                    + "Class.forName(\"%s\"), \"%s\", \"%s\");",
-                method.getReturnType().getName(),
-                method.getReturnType().getName(),
-                clazz.getName(),
-                method.getName()));
+            classMethod.setBody("return " + methodCall);
           }
         }
       }
-
-      // Also stub certain constructors
-      for (Class<?> classToStub : getClassesToStub()) {
-        if (classToStub.getName().equals(clazz.getName())) {
-          for (CtConstructor constructor : clazz.getConstructors()) {
-            String parameters = makeNullParameters(
-                clazz.getSuperclass().getConstructors()[0].getParameterTypes());
-            constructor.setBody("super(" + parameters + ");");
-          }
-        }
+    }
+    
+    private String getParameterArray(int length) {
+      String parameterArray = "(";
+      for (int i = 0; i < length - 1; i++) {
+          parameterArray += "$" + (i + 1) + ",";
       }
+      if (length != 0) {
+          parameterArray += "$" + (length);
+      }
+  
+      return parameterArray + ")";
     }
 
     private String makeNullParameters(CtClass[] paramClasses) {
